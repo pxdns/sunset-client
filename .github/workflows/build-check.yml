@@ -51,12 +51,12 @@ jobs:
           key: hz-${{ steps.pins.outputs.horizon }}-${{ steps.pins.outputs.mixins }}-${{ env.RUSTUP_TOOLCHAIN }}-v1-${{ github.sha }}
           restore-keys: |
             hz-${{ steps.pins.outputs.horizon }}-${{ steps.pins.outputs.mixins }}-${{ env.RUSTUP_TOOLCHAIN }}-v1-
-      - name: Horizon at the pinned commit
+      - name: Horizon at the pinned commit (GitHub's archive, links left out, as the launcher's source())
         run: |
-          git init -q horizon && cd horizon
-          git remote add origin https://github.com/horizon-rust/horizon.git
-          git fetch -q --depth 1 origin ${{ steps.pins.outputs.horizon }}
-          git checkout -q FETCH_HEAD && git log -1 --format='%H %s'
+          mkdir horizon
+          curl -fsSL https://codeload.github.com/horizon-rust/horizon/tar.gz/${{ steps.pins.outputs.horizon }} | tar xz --strip-components=1 -C horizon
+          find horizon -type l -print -delete
+          echo ${{ steps.pins.outputs.horizon }} > horizon/.horizon-revision
       - name: horizon-mixins at the pinned commit
         run: |
           test -x ~/.cargo/bin/horizon-mixins || cargo install --locked --git https://github.com/horizon-rust/horizon-mixins --rev ${{ steps.pins.outputs.mixins }} horizon-mixins-cli
