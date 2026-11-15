@@ -1,0 +1,89 @@
+# Compile-checks and unit-tests Sunset against the Horizon and horizon-mixins commits pinned in horizon-native.json,
+# the way the launcher's `native-build` stages it: horizon-mixins (cargo install --locked --git --rev) applies
+# mixins/ to a pristine Horizon checkout in a fresh stage, then cargo checks the client binary and runs the
+# Sunset unit tests (`cargo test -p horizon-client --lib -- sunset`) in that stage.
+name: build-check
+on:
+  push:
+    branches: [ci/build-check, "ci/**"]
+  workflow_dispatch:
+concurrency:
+  group: build-check-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CARGO_TERM_COLOR: never
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: sunset
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h /
+      - name: System libraries (ALSA, udev)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev pkg-config
+      - name: Pins
+        id: pins
+        run: |
+          h=$(python3 -c 'import json;print(json.load(open("sunset/horizon-native.json"))["horizon"])')
+          m=$(python3 -c 'import json;print(json.load(open("sunset/horizon-native.json"))["mixins"])')
+          echo "horizon=$h" >> "$GITHUB_OUTPUT"; echo "mixins=$m" >> "$GITHUB_OUTPUT"
+          echo "Horizon $h, horizon-mixins $m"
+      - name: Rust (the launcher's 1.99.1, else stable)
+        run: |
+          if rustup toolchain install 1.99.1 --profile minimal; then echo "RUSTUP_TOOLCHAIN=1.99.1" >> "$GITHUB_ENV";
+          else rustup toolchain install stable --profile minimal; echo "RUSTUP_TOOLCHAIN=stable" >> "$GITHUB_ENV"; fi
+      - name: Report toolchain
+        run: rustc -V && cargo -V
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/horizon-mixins
+            target
+          key: hz-${{ steps.pins.outputs.horizon }}-${{ steps.pins.outputs.mixins }}-${{ env.RUSTUP_TOOLCHAIN }}-v1-${{ github.sha }}
+          restore-keys: |
+            hz-${{ steps.pins.outputs.horizon }}-${{ steps.pins.outputs.mixins }}-${{ env.RUSTUP_TOOLCHAIN }}-v1-
+      - name: Horizon at the pinned commit
+        run: |
+          git init -q horizon && cd horizon
+          git remote add origin https://github.com/horizon-rust/horizon.git
+          git fetch -q --depth 1 origin ${{ steps.pins.outputs.horizon }}
+          git checkout -q FETCH_HEAD && git log -1 --format='%H %s'
+      - name: horizon-mixins at the pinned commit
+        run: |
+          test -x ~/.cargo/bin/horizon-mixins || cargo install --locked --git https://github.com/horizon-rust/horizon-mixins --rev ${{ steps.pins.outputs.mixins }} horizon-mixins-cli
+          ~/.cargo/bin/horizon-mixins --help | head -5 || true
+      - name: Apply the mixins (horizon-mixins apply)
+        run: |
+          mkdir -p logs
+          ~/.cargo/bin/horizon-mixins apply --workspace horizon --mods sunset/mixins --out stage > logs/apply.json 2> logs/apply.err || { cat logs/apply.err; exit 1; }
+          head -c 2000 logs/apply.json; echo
+      - name: cargo check -p horizon-client --bin horizon-client
+        run: |
+          cd stage
+          set -o pipefail
+          cargo check --locked -p horizon-client --bin horizon-client --message-format=short 2>&1 | tee ../logs/check.log
+      - name: cargo test -p horizon-client --lib -- sunset
+        run: |
+          cd stage
+          set -o pipefail
+          cargo test --locked -p horizon-client --lib -- sunset 2>&1 | tee ../logs/test.log
+      - name: Warnings in Sunset's files
+        if: always()
+        run: |
+          grep -E '^(crates/[^:]*sunset[^:]*\.rs):[0-9]+:[0-9]+: warning' logs/check.log | sort -u | tee logs/sunset-warnings.txt || true
+          echo "Sunset warnings: $(wc -l < logs/sunset-warnings.txt 2>/dev/null || echo 0)"
+          grep -E '^test result' logs/test.log || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-check-logs
+          path: logs/
