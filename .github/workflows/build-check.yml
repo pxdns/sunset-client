@@ -84,11 +84,11 @@ jobs:
           cd stage
           set -o pipefail
           cargo test --locked -p horizon-client --lib -- sunset 2>&1 | tee ../logs/test.log
-      - name: Warnings in Sunset's files
+      - name: Compiler warnings (Sunset is compiled into Horizon's own files, so every warning counts)
         if: always()
         run: |
-          grep -E '^(crates/[^:]*sunset[^:]*\.rs):[0-9]+:[0-9]+: warning' logs/check.log | sort -u | tee logs/sunset-warnings.txt || true
-          echo "Sunset warnings: $(wc -l < logs/sunset-warnings.txt 2>/dev/null || echo 0)"
+          cat logs/check.log logs/test.log 2>/dev/null | grep -E '^[^ ]+\.rs:[0-9]+:[0-9]+: warning' | sort -u | tee logs/warnings.txt || true
+          echo "Rust warnings: $(wc -l < logs/warnings.txt)"
           grep -E '^test result' logs/test.log || true
       - uses: actions/upload-artifact@v4
         if: always()
